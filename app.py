@@ -7,6 +7,7 @@ import io
 import os
 from werkzeug.exceptions import RequestEntityTooLarge
 
+
 def get_mongo():
     global mongo
     try:
@@ -16,14 +17,24 @@ def get_mongo():
         pass
     return default_mongo
 
+
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
 
 # Created to limit CSV upload file size to 2 MB
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024
 
-# Connects to a default MongoDB database
-default_mongo = CRUD("webapp_user", "securepassword123", "webappDB", "courses")
+# Use MongoDB Atlas if available
+mongo_uri = os.getenv("MONGO_URI")
+
+if mongo_uri:
+    print("Connecting to MongoDB Atlas via MONGO_URI...")
+    default_mongo = CRUD(db_name="webappDB", collection_name="courses")
+else:
+    print("No MONGO_URI found. Using local MongoDB connection.")
+    # Connects to a default MongoDB database otherwise
+    default_mongo = CRUD("webapp_user", "securepassword123", "webappDB",
+                         "courses")
 
 mongo = default_mongo
 
@@ -46,10 +57,11 @@ def index():
     if mongo is None:
         flash("Please connect to MongoDB first:")
         return redirect(url_for("connect"))
-    
+
     # Shows courses
     courses = list(get_mongo().collection.find({}))
     return render_template("index.html", courses=courses)
+
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
@@ -64,8 +76,12 @@ def upload():
         file = request.files["file"]
 
         # will prompt user for a .csv file if one was not entered
-        if not file.filename.endswith(".csv"):
-            flash("Please upload a CSV file.")
+        if not file or not file.filename:
+            flash("No file selected. Please upload a CSV file.")
+            return redirect(url_for("upload"))
+
+        if not file.filename.lower().endswith(".csv"):
+            flash("Please upload a valid CSV file.")
             return redirect(url_for("upload"))
 
         # saves file temporarily
@@ -81,27 +97,34 @@ def upload():
             reader = csv.reader(f)
             for i, row in enumerate(reader):
                 if i >= max_rows:
-                    flash(f"Upload limit reached ({max_rows} courses max). Subsequent rows are skipped")
+                    flash(
+                        f"Upload limit reached ({max_rows} courses max). Subsequent rows are skipped"
+                    )
 
                 if len(row) < 2:
                     continue
-                
+
                 doc = {
-                    "course_number": row[0].strip(),
-                    "course_title": row[1].strip(),
-                    "prerequisites": [p.strip() for p in row[2:]] if len(row) > 2 else []
+                    "course_number":
+                    row[0].strip(),
+                    "course_title":
+                    row[1].strip(),
+                    "prerequisites":
+                    [p.strip() for p in row[2:]] if len(row) > 2 else []
                 }
 
                 # Avoids duplicates
-                existing = get_mongo().collection.find_one({"course_number": row[0]})
+                existing = get_mongo().collection.find_one(
+                    {"course_number": row[0]})
                 if not existing:
                     mongo.create(doc)
                     inserted += 1
 
         flash(f"Uploaded {inserted} course(s) successfully!")
         return redirect(url_for("index"))
-    
+
     return render_template("upload.html")
+
 
 @app.route('/export')
 def export_courses():
@@ -126,17 +149,18 @@ def export_courses():
         prereqs = ", ".join(course.get("prerequisites", []))
         writer.writerow([
             course.get("course_number", ""),
-            course.get("course_title", ""),
-            prereqs
+            course.get("course_title", ""), prereqs
         ])
 
     output.seek(0)
 
-    return Response(
-        output,
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment;filename=courses_export.csv"}
-    )
+    return Response(output,
+                    mimetype="text/csv",
+                    headers={
+                        "Content-Disposition":
+                        "attachment;filename=courses_export.csv"
+                    })
+
 
 @app.route("/use-sample", methods=["POST"])
 def use_sample():
@@ -158,12 +182,16 @@ def use_sample():
                     continue
 
                 doc = {
-                    "course_number": row[0].strip(),
-                    "course_title": row[1].strip(),
-                    "prerequisites": [p.strip() for p in row[2:]] if len(row) > 2 else []
+                    "course_number":
+                    row[0].strip(),
+                    "course_title":
+                    row[1].strip(),
+                    "prerequisites":
+                    [p.strip() for p in row[2:]] if len(row) > 2 else []
                 }
 
-                existing = get_mongo().collection.find_one({"course_number": row[0]})
+                existing = get_mongo().collection.find_one(
+                    {"course_number": row[0]})
                 if not existing:
                     get_mongo().create(doc)
                     inserted += 1
@@ -174,12 +202,14 @@ def use_sample():
 
     return redirect(url_for("index"))
 
+
 # Allows users to delete a course on the front end
 @app.route("/delete/<course_number>", methods=["POST"])
 def delete_course(course_number):
     """Deletes a course from MongoDB by the course number"""
     try:
-        result = get_mongo().collection.delete_one({"course_number": course_number})
+        result = get_mongo().collection.delete_one(
+            {"course_number": course_number})
         if result.deleted_count > 0:
             flash(f"Deleted course: {course_number}")
         else:
@@ -187,6 +217,7 @@ def delete_course(course_number):
     except Exception as e:
         flash(f"Error deleting course: {str(e)}")
     return redirect(url_for("index"))
+
 
 @app.route("/clear", methods=["POST"])
 def clear_courses():
@@ -197,6 +228,7 @@ def clear_courses():
     except Exception as e:
         flash(f"Error clearing courses: {str(e)}")
     return redirect(url_for("index"))
+
 
 @app.route("/edit/<course_number>", methods=["GET", "POST"])
 def edit_course(course_number):
@@ -209,16 +241,19 @@ def edit_course(course_number):
         return redirect(url_for("index"))
 
     if request.method == "POST":
-        new_title = request.form.get("course_title").strip()
-        new_prereqs = request.form.get("prerequisites").strip()
+        new_title = (request.form.get("course_title") or "").strip()
+        new_prereqs = (request.form.get("prerequisites") or "").strip()
 
-        prereq_list = [p.strip() for p in new_prereqs.split(",")] if new_prereqs else []
+        prereq_list = [p.strip()
+                       for p in new_prereqs.split(",")] if new_prereqs else []
 
         try:
-            collection.update_one(
-                {"course_number": course_number},
-                {"$set": {"course_title": new_title, "prerequisites": prereq_list}}
-            )
+            collection.update_one({"course_number": course_number}, {
+                "$set": {
+                    "course_title": new_title,
+                    "prerequisites": prereq_list
+                }
+            })
             flash(f"Course {course_number} updated successfully.")
             return redirect(url_for("index"))
         except Exception as e:
@@ -241,8 +276,9 @@ def connect():
 
         try:
             if not username or not db_name or not collection_name:
-                raise ValueError("Missing required fields for MongoDB connection")
-            
+                raise ValueError(
+                    "Missing required fields for MongoDB connection")
+
             temp_mongo = CRUD(username, password, db_name, collection_name)
 
             _ = temp_mongo.collection.database.list_collection_names()
@@ -251,21 +287,25 @@ def connect():
             flash(f"Connected successfully to MongoDB database: '{db_name}'")
 
             return redirect(url_for("index"))
-        
+
         except Exception as e:
             # defaults to default_mongo database instance if user connection fails
             mongo = default_mongo
-            flash(f"Connection failed. Using default MongoDB instead. Error: {str(e)}")
+            flash(
+                f"Connection failed. Using default MongoDB instead. Error: {str(e)}"
+            )
             return redirect(url_for("index"))
 
     return render_template("connect.html")
+
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_file(e):
     flash("File is too large. Maximum allowed size is 2MB")
     return redirect(url_for("upload"))
 
+
 if __name__ == "__main__":
     os.makedirs("uploads", exist_ok=True)
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 81))
+    app.run(host="0.0.0.0", port=port, debug=True)
