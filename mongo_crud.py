@@ -11,6 +11,11 @@ class CRUD:
                  collection_name="courses",
                  host="localhost",
                  port=27017):
+        
+        self.client = None
+        self.db = None
+        self.collection = None
+        
         try:
             # Checks if MONGO_URI environment variable is set
             mongo_uri = os.getenv("MONGO_URI")
