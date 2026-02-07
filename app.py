@@ -7,15 +7,9 @@ import io
 import os
 from werkzeug.exceptions import RequestEntityTooLarge
 
-
 def get_mongo():
-    global mongo
-    try:
-        if mongo is None:
-            return default_mongo
-    except Exception:
-        pass
-    return default_mongo
+    global mongo, default_mongo
+    return mongo if mongo is not None else default_mongo
 
 
 app = Flask(__name__)
