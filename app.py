@@ -10,6 +10,14 @@ from werkzeug.exceptions import RequestEntityTooLarge
 def get_mongo():
     global mongo, default_mongo
     return mongo if mongo is not None else default_mongo
+    
+# redirects connection instead of crashing
+def require_collection():
+    mongo_obj = get_mongo()
+    if mongo_obj is None or getattr(mongo_obj, "collection", None) is None:
+        flash("Database connection is not available. Please connect to MongoDB.")
+        return None
+    return mongo_obj
 
 
 app = Flask(__name__)
@@ -18,17 +26,13 @@ app.secret_key = "supersecretkey"
 # Created to limit CSV upload file size to 2 MB
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024
 
-# Use MongoDB Atlas if available
-mongo_uri = os.getenv("MONGO_URI")
-
-if mongo_uri:
-    print("Connecting to MongoDB Atlas via MONGO_URI...")
-    default_mongo = CRUD(db_name="webappDB", collection_name="courses")
-else:
-    print("No MONGO_URI found. Using local MongoDB connection.")
-    # Connects to a default MongoDB database otherwise
-    default_mongo = CRUD("webapp_user", "securepassword123", "webappDB",
-                         "courses")
+# Initialize default MongoDB connection
+default_mongo = CRUD(
+    username="webapp_user",
+    password="securepassword123",
+    db_name="webappDB",
+    collection_name="courses"
+)
 
 mongo = default_mongo
 
@@ -42,8 +46,11 @@ def index():
     if "visited" not in session:
         session["visited"] = True
         try:
-            default_mongo.collection.delete_many({})
-            print(" Cleared default MongoDB for new user session")
+            if getattr(default_mongo, "collection", None) is not None:
+                default_mongo.collection.delete_many({})
+                print("Cleared default MongoDB for new user session")
+            else:
+                print("Default MongoDB collection not available; skipping clear.")
         except Exception as e:
             print(f"Could not clear default MongoDB: {e}")
 
@@ -53,7 +60,11 @@ def index():
         return redirect(url_for("connect"))
 
     # Shows courses
-    courses = list(get_mongo().collection.find({}))
+    mongo_obj = require_collection()
+    if mongo_obj is None:
+        return redirect(url_for("connect"))
+
+    courses = list(mongo_obj.collection.find({}))
     return render_template("index.html", courses=courses)
 
 
@@ -77,6 +88,10 @@ def upload():
         if not file.filename.lower().endswith(".csv"):
             flash("Please upload a valid CSV file.")
             return redirect(url_for("upload"))
+            
+        mongo_obj = require_collection()
+        if mongo_obj is None:
+            return redirect(url_for("connect"))
 
         # saves file temporarily
         filepath = os.path.join("uploads", file.filename)
@@ -94,6 +109,7 @@ def upload():
                     flash(
                         f"Upload limit reached ({max_rows} courses max). Subsequent rows are skipped"
                     )
+                    break
 
                 if len(row) < 2:
                     continue
@@ -108,8 +124,7 @@ def upload():
                 }
 
                 # Avoids duplicates
-                existing = get_mongo().collection.find_one(
-                    {"course_number": row[0]})
+                existing = mongo_obj.collection.find_one({"course_number": row[0]})
                 if not existing:
                     mongo.create(doc)
                     inserted += 1
@@ -124,8 +139,13 @@ def upload():
 def export_courses():
     """Exports all courses from the current MongoDB connection to CSV"""
     try:
-        collection = get_mongo().collection
+        mongo_obj = require_collection()
+        if mongo_obj is None:
+            return redirect(url_for("connect"))
+
+        collection = mongo_obj.collection
         courses = list(collection.find({}, {"_id": 0}))
+    
     except Exception as e:
         flash(f"Error accessing database: {str(e)}")
         return redirect(url_for("index"))
@@ -166,6 +186,10 @@ def use_sample():
     if not os.path.exists(sample_path):
         flash("Sample file not found.")
         return redirect(url_for("index"))
+        
+    mongo_obj = require_collection()
+    if mongo_obj is None:
+        return redirect(url_for("connect"))
 
     inserted = 0
     try:
@@ -184,10 +208,9 @@ def use_sample():
                     [p.strip() for p in row[2:]] if len(row) > 2 else []
                 }
 
-                existing = get_mongo().collection.find_one(
-                    {"course_number": row[0]})
+                existing = mongo_obj.collection.find_one({"course_number": row[0]})
                 if not existing:
-                    get_mongo().create(doc)
+                    mongo_obj.create(doc)
                     inserted += 1
 
         flash(f"Loaded {inserted} sample course(s) successfully!")
@@ -201,8 +224,13 @@ def use_sample():
 @app.route("/delete/<course_number>", methods=["POST"])
 def delete_course(course_number):
     """Deletes a course from MongoDB by the course number"""
+    
+    mongo_obj = require_collection()
+    if mongo_obj is None:
+        return redirect(url_for("connect"))
+        
     try:
-        result = get_mongo().collection.delete_one(
+        result = mongo_obj.collection.delete_one(
             {"course_number": course_number})
         if result.deleted_count > 0:
             flash(f"Deleted course: {course_number}")
@@ -216,8 +244,12 @@ def delete_course(course_number):
 @app.route("/clear", methods=["POST"])
 def clear_courses():
     """Deletes all courses from the current MongoDB collection."""
+    mongo_obj = require_collection()
+    if mongo_obj is None:
+        return redirect(url_for("connect"))
+        
     try:
-        result = get_mongo().collection.delete_many({})
+        result = mongo_obj.collection.delete_many({})
         flash(f"Deleted {result.deleted_count} course(s) successfully.")
     except Exception as e:
         flash(f"Error clearing courses: {str(e)}")
@@ -227,7 +259,11 @@ def clear_courses():
 @app.route("/edit/<course_number>", methods=["GET", "POST"])
 def edit_course(course_number):
     """Displays and updates an existing course"""
-    collection = get_mongo().collection
+    mongo_obj = require_collection()
+    if mongo_obj is None:
+        return redirect(url_for("connect"))
+
+    collection = mongo_obj.collection
     course = collection.find_one({"course_number": course_number})
 
     if not course:
